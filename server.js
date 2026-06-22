@@ -20,6 +20,28 @@ function sendJson(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
+function proxyToBinance(res, path, method, headers, body) {
+  const options = {
+    hostname: "api.binance.com",
+    path: path,
+    method: method,
+    headers: headers,
+  };
+  const proxyReq = https.request(options, proxyRes => {
+    let data = "";
+    proxyRes.on("data", chunk => { data += chunk; });
+    proxyRes.on("end", () => {
+      res.writeHead(proxyRes.statusCode, corsHeaders());
+      res.end(data);
+    });
+  });
+  proxyReq.on("error", e => {
+    sendJson(res, 500, { error: "Erreur du serveur relais : " + String(e) });
+  });
+  if (body) proxyReq.write(body);
+  proxyReq.end();
+}
+
 const server = http.createServer((req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, corsHeaders());
@@ -28,12 +50,12 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === "GET") {
-    sendJson(res, 200, { status: "EXLANDJIE Binance proxy en ligne. Utilisez POST pour les requêtes." });
+    sendJson(res, 200, { status: "EXLANDJIE Binance proxy en ligne. Utilisez POST pour les requetes." });
     return;
   }
 
   if (req.method !== "POST") {
-    sendJson(res, 405, { error: "Méthode non supportée, utilisez POST." });
+    sendJson(res, 405, { error: "Methode non supportee, utilisez POST." });
     return;
   }
 
@@ -44,11 +66,19 @@ const server = http.createServer((req, res) => {
     try {
       parsed = JSON.parse(body);
     } catch (e) {
-      sendJson(res, 400, { error: "Corps de requête invalide (JSON attendu)." });
+      sendJson(res, 400, { error: "Corps de requete invalide (JSON attendu)." });
       return;
     }
 
-    const { apiKey, apiSecret, path, params, method } = parsed;
+    const { apiKey, apiSecret, path, params, method, isPublic } = parsed;
+
+    if (isPublic) {
+      if (!path) { sendJson(res, 400, { error: "path obligatoire." }); return; }
+      const query = new URLSearchParams(params || {});
+      proxyToBinance(res, `${path}?${query.toString()}`, "GET", {});
+      return;
+    }
+
     if (!apiKey || !apiSecret || !path) {
       sendJson(res, 400, { error: "apiKey, apiSecret et path sont obligatoires." });
       return;
@@ -60,27 +90,8 @@ const server = http.createServer((req, res) => {
       query.set("recvWindow", "10000");
       const signature = hmacSha256Hex(apiSecret, query.toString());
       query.set("signature", signature);
-
       const httpMethod = (method || "GET").toUpperCase();
-      const options = {
-        hostname: "api.binance.com",
-        path: `${path}?${query.toString()}`,
-        method: httpMethod,
-        headers: { "X-MBX-APIKEY": apiKey },
-      };
-
-      const proxyReq = https.request(options, proxyRes => {
-        let data = "";
-        proxyRes.on("data", chunk => { data += chunk; });
-        proxyRes.on("end", () => {
-          res.writeHead(proxyRes.statusCode, corsHeaders());
-          res.end(data);
-        });
-      });
-      proxyReq.on("error", e => {
-        sendJson(res, 500, { error: "Erreur du serveur relais : " + String(e) });
-      });
-      proxyReq.end();
+      proxyToBinance(res, `${path}?${query.toString()}`, httpMethod, { "X-MBX-APIKEY": apiKey });
     } catch (e) {
       sendJson(res, 500, { error: "Erreur du serveur relais : " + String(e) });
     }
